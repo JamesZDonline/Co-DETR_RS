@@ -1,0 +1,42 @@
+conda create -n codetr -y python=3.10 pip
+conda activate codetr
+conda install cuda -c nvidia/label/cuda-11.8.0
+conda install -y pytorch=1.11 torchvision pytorch-cuda=11 -c pytorch -c nvidia/label/cuda-11.8.0
+conda install numpy=1.26.4
+pip install yapf==0.40.1
+pip install rastervision
+
+
+
+git clone https://github.com/Sense-X/Co-DETR.git
+cd Co-DETR
+
+wget https://github.com/adensur/blog/blob/main/computer_vision_zero_to_hero/28_CoDetr/sandbox.ipynb
+
+
+mkdir data
+cd data
+mkdir coco
+cd coco
+wget http://images.cocodataset.org/zips/train2017.zip
+wget http://images.cocodataset.org/zips/val2017.zip
+wget http://images.cocodataset.org/annotations/annotations_trainval2017.zip
+for u in `ls *zip`; do unzip $u; done
+rm -rf *zip
+cd ..
+mkdir lvis_v1
+cd lvis_v1
+# lvis_v1 uses the same images as coco, so symlinks should suffice
+ln -s ../coco/train2017/ .
+ln -s ../coco/val2017/ 
+wget https://dl.fbaipublicfiles.com/LVIS/lvis_v1_train.json.zip
+wget https://dl.fbaipublicfiles.com/LVIS/lvis_v1_val.json.zip
+for u in `ls *zip`; do unzip $u; done
+rm -rf *zip
+mkdir annotations
+mv lvis_v1_* annotations/
+cd ../..
+
+
+
+sudo mount -t cifs //sarlserver06.cas.vanderbilt.edu/sarl_commons06 /mnt/imagery_data/ -o username=zimmejr1,domain=vuds
