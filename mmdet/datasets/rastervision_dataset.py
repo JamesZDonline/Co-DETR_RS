@@ -1,4 +1,7 @@
 from mmdet.datasets.builder import DATASETS
+from mmdet.datasets import CustomDataset
+from .pipelines import Compose
+import numpy as np
 from torch.utils.data import Dataset, ConcatDataset
 import pandas as pd
 import os
@@ -11,41 +14,66 @@ from rastervision.core.data import(
     GeoJSONVectorSource,
     Scene,
     ClassInferenceTransformer,
-    BufferTransformer
+    BufferTransformer,
+    ClassConfig
 )
 from rastervision.pytorch_learner import(
     ObjectDetectionSlidingWindowGeoDataset
 )
 
 @DATASETS.register_module()
-class RasterVisionDataset(Dataset):
-    def __init__(self, image_dir,vector_dir,scene_csv_path,class_config, pipeline, **kwargs):
-        super().__init__(**kwargs)
+class RasterVisionDataset(CustomDataset):
+    CLASSES = ('nothing','object')
+    COLORS = ['lightgray','lightblue']
+
+    def __init__(
+            self,
+            image_dir,
+            vector_dir,
+            pipeline,
+            scene_csv_path,
+            class_config=None,
+            **kwargs):
         self.image_dir = image_dir
         self.vector_dir = vector_dir
-        self.scene = scene_csv_path
-        self.class_config = class_config
-        self.pipeline = pipeline
-        print("Reading Scene.csv")
-        try:
-            data_df = pd.read_csv(self.scene)
-        except:
-            print("Can't read Scene.csv")
+        self.scene_path = scene_csv_path
+        # self.class_config = class_config
+        if class_config==None:
+            self.class_config = ClassConfig(
+            names=self.CLASSES,
+            colors=self.COLORS,
+            null_class='nothing')
+        else:
+            self.class_config=class_config
         
-        labeled_sceneList = [
-            self._create_OD_scene(
-                os.path.join(self.vector_dir,*row['aoi_path'].split("\\")),
-                os.path.join(image_dir,*row['image_path'].split("\\")),
-                os.path.join(vector_dir,*row['label_path'].split("\\"))) 
-                for index , 
-                row in data_df.iterrows()]
+        #Read in the Scenes.csv file
+        print(f"Reading {self.scene_path}")
+        try:
+            data_df = pd.read_csv(self.scene_path)
+        except Exception as e:
+            print("Can't read Scene.csv")
+            print(str(e))
+        
+        #Construct a list of scenes. Each row in scenes.csv becomes a separate scene
+        print('Building Scenes')
+        labeled_sceneList = []
+        for index,row in data_df.iterrows():
+            aoi_fullpath = os.path.join(self.vector_dir,*row['aoi_path'].split("\\"))
+            image_fullpath = os.path.join(image_dir,*row['image_path'].split("\\"))
+            label_fullpath = os.path.join(vector_dir,*row['label_path'].split("\\"))
+            labeled_sceneList.append(self._create_OD_scene(aoi_fullpath,image_fullpath,label_fullpath,class_config=self.class_config))
+        
+        #Construct a list of datasets from the list of scenes
+        print("Building Datasets")
+        labeled_dataset_list = []
+        for scene_ in labeled_sceneList:
+            labeled_dataset_list.append(self._create_OD_dataset(scene_))
+        self.rastervision_dataset = ConcatDataset(labeled_dataset_list)
+        super(RasterVisionDataset,self).__init__(img_prefix=image_dir,pipeline=pipeline,ann_file = scene_csv_path, **kwargs)
+        self.pipeline = Compose(pipeline)
 
-        labeled_dataset_list = [
-            self._create_OD_dataset(scene)
-             for scene in tqdm(labeled_sceneList,desc="Create Labeled Datasets:")]
-        self.rastervision.dataset = ConcatDataset(labeled_dataset_list)
 
-    def _create_OD_scene(self, aoi_path, image_path,class_config,label_path=None):
+    def _create_OD_scene(self, aoi_path, image_path,label_path,class_config):
         crs_transformer = RasterioCRSTransformer.from_uri(image_path)
 
         # Create an extent to clip everything to that is slightly larger than the AOI
@@ -119,8 +147,8 @@ class RasterVisionDataset(Dataset):
             pixel_size = rasterio.warp.calculate_default_transform(src_crs=img_crs,dst_crs=target_crs,width=width,height=height,left=left,right=right,bottom=bottom,top=top)[0][0]
             return pixel_size
 
-    def _create_OD_dataset(self,scene):
-        pixel_size = self._find_patch_size(scene.raster_source.imagery_path)
+    def _create_OD_dataset(self,scene_):
+        pixel_size = self._find_patch_size(scene_.raster_source.imagery_path)
         patch_ground_size = 256*.3
         #Default patch size
         msize=round(patch_ground_size/pixel_size)
@@ -128,7 +156,7 @@ class RasterVisionDataset(Dataset):
         
         #Create the Dataset
         ds = ObjectDetectionSlidingWindowGeoDataset(
-            scene=scene, # a scene object as created in step 1
+            scene=scene_, # a scene object as created in step 1
             size=msize, # the dimension of the patch
             stride=mstride, # equal to the patch so there is no overlap and no gaps
             out_size=256, # reshape the patch to be 256x256
@@ -137,7 +165,70 @@ class RasterVisionDataset(Dataset):
         )
         return(ds)
 
+        #MMDET expects this method. It is meaningless for us since our data is not structured
+        #in the COCO format as it expects. Nevertheless, MMDET requires certain attributes associated
+        #with the data. So this method provides them
+    def load_annotations(self, ann_file):
+        print('LOADING ANNOTATIONS')
+        data_infos = []
+        for idx in range(len(self.rastervision_dataset)):
+            img_info = "nonsense"
+            ann_info = "ann nonsense"
+            data_infos.append(dict(filename="fakename", width=224, height=224, ann=ann_info))
+        return data_infos
+    
+    def pre_pipeline(self, results):
+        """Prepare results dict for pipeline."""
+        results['img_prefix'] = self.img_prefix
+        results['seg_prefix'] = self.seg_prefix
+        results['proposal_file'] = self.proposal_file
+        results['bbox_fields'] = ['gt_bboxes']
+        results['mask_fields'] = []
+        results['seg_fields'] = []
+    
+        # idx -> data that has been through the defined augmentation pipeline
+    def prepare_train_img(self, idx):
+        # Grab an image and target from the rastervision dataset
+        img, target = self.rastervision_dataset[idx]
+
+        #MMDEt pipeline expects a numpy in 
+        img=img.permute(1,2,0)
+        img = img.numpy()
+        # img = np.transpose(img)
         
+        #Convert target to MMDetection format
+        gt_bboxes=target.boxes.numpy()
+        gt_labels = target.get_field('class_ids')
+        results = {'img' : img,
+                   'filename':"none",
+                   'ori_filename':"none",
+                   'ori_shape' : img.shape,
+            "img_shape":img.shape,
+            'gt_bboxes' : gt_bboxes,
+            'gt_labels' : gt_labels,
+            'bbox_fields' : []
+        }
+        self.pre_pipeline(results)
+        return self.pipeline(results)
+    
+    # def prepare_test_img(self, idx):
+    #     img, __ = self.rastervision_dataset[idx]
+    #     img = np.transpose(img.numpy())
+    #     # r, g, b = img[4, :,:], img[2, :, :], img[1, :, :]
+
+    #     # Combine the bands into a 3-channel RGB image
+    #     # rgb_img = np.stack([r, g, b], axis=-1)
+
+    #     #Convert target to MMDetection format
+    #     results = {
+    #         'img_metas' : {
+    #             "img_shape":img.shape,
+    #         },
+    #         'img' : img
+    #     }
+    #     self.pre_pipeline(results)
+    #     return self.pipeline(results)
+    
 
     def __len__(self):
         return len(self.rastervision_dataset)
@@ -149,15 +240,6 @@ class RasterVisionDataset(Dataset):
         return boxes,labels
 
     def __getitem__(self, idx):
-        img, target = self.rastervision_dataset[idx]
-
-        #Convert target to MMDetection format
-        gt_bboxes, gt_labels = self._coco_box(target)
-        data={
-            'img' : img,
-            'gt_bboxes' : gt_bboxes,
-            'gt_labels' : gt_labels
-        }
-        return self.pipeline(data)
+        return super().__getitem__(idx)
 
     
