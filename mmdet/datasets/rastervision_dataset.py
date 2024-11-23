@@ -77,16 +77,16 @@ class RasterVisionDataset(CustomDataset):
         crs_transformer = RasterioCRSTransformer.from_uri(image_path)
 
         # Create an extent to clip everything to that is slightly larger than the AOI
-        aoiSource = GeoJSONVectorSource(
-            aoi_path,crs_transformer,vector_transformers=[BufferTransformer(geom_type='Polygon', default_buf=256)])
+        # aoiSource = GeoJSONVectorSource(
+        #     aoi_path,crs_transformer,vector_transformers=[BufferTransformer(geom_type='Polygon', default_buf=256)])
 
         #Extract AOI extent
-        myextent=aoiSource.extent
+        # myextent=aoiSource.extent
 
         rasterSource = RasterioSource(
             image_path, #path to the image
             allow_streaming=True, # allow_streaming so we don't have to load the whole image
-            bbox=myextent
+            # bbox=myextent
             ) # Clip the image to the extent of the aoi. This means chip windows will only be created within the bounds of the aoi extent
         
         #Create the AOI
