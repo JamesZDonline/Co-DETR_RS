@@ -18,25 +18,34 @@ from rastervision.core.data import(
     ClassConfig
 )
 from rastervision.pytorch_learner import(
-    ObjectDetectionSlidingWindowGeoDataset
+    ObjectDetectionSlidingWindowGeoDataset,
+    ObjectDetectionRandomWindowGeoDataset
 )
 
 @DATASETS.register_module()
 class RasterVisionDataset(CustomDataset):
-    CLASSES = ('nothing','object')
-    COLORS = ['lightgray','lightblue']
+    CLASSES = ['nothing', 'Arch. Corral', 'Arch Estructura','Arch Patio','Huaca','Mod. Corral','Mod. Estructura','Mod Patio','Arch. Cista','error']
+    COLORS = ['lightgray', 'lightblue','orange','green','purple','darkblue','yellow','darkgreen','black','red']
 
     def __init__(
             self,
-            image_dir,
-            vector_dir,
+            image_dir:str,
+            vector_dir:str,
             pipeline,
-            scene_csv_path,
-            class_config=None,
+            scene_csv_path:str,
+            class_config:ClassConfig=None,
+            dataset_type:str="sliding_window",
+            testing:bool = False,
+            neg_ratio:float = 10,
+            rgb: bool = False,
             **kwargs):
         self.image_dir = image_dir
         self.vector_dir = vector_dir
         self.scene_path = scene_csv_path
+        self.dataset_type = dataset_type
+        self.testing = testing
+        self.neg_ratio = neg_ratio
+        self.rgb = rgb
         # self.class_config = class_config
         if class_config==None:
             self.class_config = ClassConfig(
@@ -50,6 +59,8 @@ class RasterVisionDataset(CustomDataset):
         print(f"Reading {self.scene_path}")
         try:
             data_df = pd.read_csv(self.scene_path)
+            if self.testing:
+                data_df = data_df.sample(n=15)
         except Exception as e:
             print("Can't read Scene.csv")
             print(str(e))
@@ -67,9 +78,9 @@ class RasterVisionDataset(CustomDataset):
         print("Building Datasets")
         labeled_dataset_list = []
         for scene_ in labeled_sceneList:
-            labeled_dataset_list.append(self._create_OD_dataset(scene_))
+            labeled_dataset_list.append(self._create_OD_dataset(scene_,self.dataset_type,neg_ratio=self.neg_ratio))
         self.rastervision_dataset = ConcatDataset(labeled_dataset_list)
-        super(RasterVisionDataset,self).__init__(img_prefix=image_dir,pipeline=pipeline,ann_file = scene_csv_path, **kwargs)
+        super(RasterVisionDataset,self).__init__(img_prefix=image_dir,pipeline=pipeline,ann_file = scene_csv_path,**kwargs)
         self.pipeline = Compose(pipeline)
 
 
@@ -106,7 +117,7 @@ class RasterVisionDataset(CustomDataset):
                 bbox=rasterSource.bbox, # clip them to the AOI extent
                 vector_transformers=[
                     ClassInferenceTransformer(
-                        default_class_id=class_config.get_class_id('object') #use class config
+                        default_class_id=class_config.get_class_id('error') #use class config
                     )
                 ]
             )
@@ -131,7 +142,7 @@ class RasterVisionDataset(CustomDataset):
             aoi_polygons=aoiSource.get_geoms())
         return scene
 
-    def _find_patch_size(self, imagery_path):
+    def _find_patch_size(self, imagery_path:str):
         with rasterio.open(imagery_path) as image:
             target_crs = rasterio.crs.CRS.from_string('EPSG:3857')
             # print(target_crs)
@@ -147,16 +158,25 @@ class RasterVisionDataset(CustomDataset):
             pixel_size = rasterio.warp.calculate_default_transform(src_crs=img_crs,dst_crs=target_crs,width=width,height=height,left=left,right=right,bottom=bottom,top=top)[0][0]
             return pixel_size
 
-    def _create_OD_dataset(self,scene_):
-        pixel_size = self._find_patch_size(scene_.raster_source.imagery_path)
-        patch_ground_size = 256*.3
+
+    def _create_OD_dataset(self,scene:Scene,dataset_type:str = "sliding_window",neg_ratio:float=10,max_windows:int=50,num_pixels:int=256):
+        pixel_size = self._find_patch_size(scene.raster_source.imagery_path)
+        patch_ground_size = num_pixels*.3
         #Default patch size
         msize=round(patch_ground_size/pixel_size)
         mstride=msize
         
+        if dataset_type == "random_window":
+            try:
+                return self._random_window_dataset(scene=scene,neg_ratio=neg_ratio,within_aoi=True,num_pixels=num_pixels,max_windows=max_windows)
+            except:
+                return self._random_window_dataset(scene=scene,neg_ratio=None,within_aoi=True,num_pixels=num_pixels,max_windows=5)
+
+
+        
         #Create the Dataset
         ds = ObjectDetectionSlidingWindowGeoDataset(
-            scene=scene_, # a scene object as created in step 1
+            scene=scene, # a scene object as created in step 1
             size=msize, # the dimension of the patch
             stride=mstride, # equal to the patch so there is no overlap and no gaps
             out_size=256, # reshape the patch to be 256x256
@@ -177,6 +197,17 @@ class RasterVisionDataset(CustomDataset):
             data_infos.append(dict(filename="fakename", width=224, height=224, ann=ann_info))
         return data_infos
     
+    def _random_window_dataset(self,scene:Scene,neg_ratio:float,within_aoi:bool,num_pixels:int,max_windows:int):
+        ds = ObjectDetectionRandomWindowGeoDataset(
+            scene=scene,
+            neg_ratio=neg_ratio,
+            within_aoi=within_aoi,
+            size_lims=(num_pixels-1,num_pixels),
+            out_size=num_pixels,
+            max_windows=max_windows
+        )
+        return ds
+
     def pre_pipeline(self, results):
         """Prepare results dict for pipeline."""
         results['img_prefix'] = self.img_prefix
@@ -190,7 +221,8 @@ class RasterVisionDataset(CustomDataset):
     def prepare_train_img(self, idx):
         # Grab an image and target from the rastervision dataset
         img, target = self.rastervision_dataset[idx]
-
+        if self.rgb:
+            img = img[[4,2,1],:,:]
         #MMDEt pipeline expects a numpy in 
         img=img.permute(1,2,0)
         img = img.numpy()
