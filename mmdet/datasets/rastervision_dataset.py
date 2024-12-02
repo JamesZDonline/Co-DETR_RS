@@ -46,7 +46,8 @@ class RasterVisionDataset(CustomDataset):
         self.testing = testing
         self.neg_ratio = neg_ratio
         self.rgb = rgb
-        # self.class_config = class_config
+
+        #Setup class_config if not passed in init
         if class_config==None:
             self.class_config = ClassConfig(
             names=self.CLASSES,
@@ -87,26 +88,16 @@ class RasterVisionDataset(CustomDataset):
     def _create_OD_scene(self, aoi_path, image_path,label_path,class_config):
         crs_transformer = RasterioCRSTransformer.from_uri(image_path)
 
-        # Create an extent to clip everything to that is slightly larger than the AOI
-        # aoiSource = GeoJSONVectorSource(
-        #     aoi_path,crs_transformer,vector_transformers=[BufferTransformer(geom_type='Polygon', default_buf=256)])
-
-        #Extract AOI extent
-        # myextent=aoiSource.extent
-
         rasterSource = RasterioSource(
             image_path, #path to the image
             allow_streaming=True, # allow_streaming so we don't have to load the whole image
-            # bbox=myextent
-            ) # Clip the image to the extent of the aoi. This means chip windows will only be created within the bounds of the aoi extent
+            ) 
         
         #Create the AOI
         aoiSource = GeoJSONVectorSource(
-            aoi_path,rasterSource.crs_transformer,bbox=rasterSource.bbox)
+            aoi_path,rasterSource.crs_transformer)
 
-        #If there are labels, import them as GeoJSONVectorSource, clipping them to the AOI extent using bbox
-        labelSource=None
-        # print(label_path)
+        #If there are labels, import them as GeoJSONVectorSource
         if not os.path.exists(label_path):
             print("No Label geojson exists")
         if label_path is not None and os.path.exists(label_path):
@@ -114,7 +105,6 @@ class RasterVisionDataset(CustomDataset):
             labelVectorSource = GeoJSONVectorSource(
                 label_path, # path to the label geojson
                 crs_transformer, # convert labels from geographic to pixel coordinates
-                bbox=rasterSource.bbox, # clip them to the AOI extent
                 vector_transformers=[
                     ClassInferenceTransformer(
                         default_class_id=class_config.get_class_id('error') #use class config
