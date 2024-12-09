@@ -30,8 +30,8 @@ from .custom_od_random_window_geodataset import CustomODRandomWindowGeoDataset
 
 @DATASETS.register_module()
 class RasterVisionDataset(CustomDataset):
-    CLASSES = ['nothing', 'Arch. Corral', 'Arch Estructura','Arch Patio','Mod. Corral','Mod. Estructura','Mod Patio']
-    COLORS = ['lightgray', 'lightblue','green','purple','darkblue','orange','darkgreen']
+    CLASSES = ['Arch. Corral', 'Arch Estructura','Arch Patio','Mod. Corral','Mod. Estructura','Mod Patio']
+    COLORS = ['lightblue','green','purple','darkblue','darkgreen','orange']
 
     def __init__(
             self,
@@ -39,10 +39,10 @@ class RasterVisionDataset(CustomDataset):
             vector_dir:str,
             pipeline,
             scene_csv_path:str,
-            training:bool=True,
             class_config:ClassConfig=None,
-            data_type:str="sliding_window",
+            data_type:str="training",
             test_code:bool = False,
+            max_windows:int = 100,
             neg_ratio:float = 10,
             resize_dim:int = 224,
             within_aoi:bool =True,
@@ -51,10 +51,10 @@ class RasterVisionDataset(CustomDataset):
         self.image_dir = image_dir
         self.vector_dir = vector_dir
         self.scene_path = scene_csv_path
-        self.dataset_type = data_type
-        self.training = training
+        self.data_type:str = data_type
         self.testing = test_code
         self.neg_ratio = neg_ratio
+        self.max_windows = max_windows
         self.rgb = rgb
         self.resize_dim = resize_dim
         self.within_aoi = within_aoi
@@ -64,7 +64,7 @@ class RasterVisionDataset(CustomDataset):
             self.class_config = ClassConfig(
             names=self.CLASSES,
             colors=self.COLORS,
-            null_class='nothing')
+            null_class=None)
         else:
             self.class_config=class_config
         
@@ -74,7 +74,7 @@ class RasterVisionDataset(CustomDataset):
             data_df = pd.read_csv(self.scene_path)
             if self.testing:
                 data_df = data_df.sample(n=20)
-            if not self.training:
+            if not self.data_type=='training':
                 data_df = data_df[data_df['dataset']==0]
         except Exception as e:
             print("Can't read Scene.csv")
@@ -93,7 +93,7 @@ class RasterVisionDataset(CustomDataset):
         print("Building Datasets")
         labeled_dataset_list = []
         for scene_ in labeled_sceneList:
-            labeled_dataset_list.append(self._create_OD_dataset(scene_,self.dataset_type,neg_ratio=self.neg_ratio,within_aoi=self.within_aoi))
+            labeled_dataset_list.append(self._create_OD_dataset(scene_,neg_ratio=self.neg_ratio,within_aoi=self.within_aoi,max_windows=self.max_windows))
         self.rastervision_dataset = ConcatDataset(labeled_dataset_list)
         print(f'There are {len(self.rastervision_dataset)} images in the dataset!')
         super(RasterVisionDataset,self).__init__(img_prefix=image_dir,pipeline=pipeline,ann_file = scene_csv_path,**kwargs)
@@ -108,28 +108,32 @@ class RasterVisionDataset(CustomDataset):
                 image_path, #path to the image
                 allow_streaming=True, # allow_streaming so we don't have to load the whole image
             ) 
-        if self.dataset_type=="sliding_window":
+        
+        pixel_size = self._find_patch_size(rasterSource.imagery_path)
+        patch_ground_size = 256*.3
+        #Default patch size
+        msize=round(patch_ground_size/pixel_size)
 
-                # Create an extent to clip everything to that is slightly larger than the AOI
-            aoiSource = GeoJSONVectorSource(
-                aoi_path,
-                crs_transformer,
-                # vector_transformers=[BufferTransformer(geom_type='Polygon', default_buf=256)]
-            )
-
-            # Extract AOI extent
-            myextent=aoiSource.extent
-
+        # Create an extent to clip everything to that is slightly larger than the AOI
+        aoiSource = GeoJSONVectorSource(
+            aoi_path,
+            crs_transformer,
+            # vector_transformers=[BufferTransformer(geom_type='Polygon', default_buf=256)]
+        )
+    
+        # Extract AOI extent
+        myextent=aoiSource.extent
+        use_sliding_windows = self.data_type!="training"  or self.approx_num_aoi_chips(myextent, msize)<=self.max_windows 
+        if use_sliding_windows:
             rasterSource = RasterioSource(
                 image_path, #path to the image
                 allow_streaming=True, # allow_streaming so we don't have to load the whole image
                 bbox=myextent
                 ) # Clip the image to the extent of the aoi. This means chip windows will only be created within the bounds of the aoi extent
-        
-        
-        #Create the AOI
-        aoiSource = GeoJSONVectorSource(
-            aoi_path,rasterSource.crs_transformer)
+            #Create the AOI
+            aoiSource = GeoJSONVectorSource(
+                aoi_path,rasterSource.crs_transformer)         
+            
 
         #If there are labels, import them as GeoJSONVectorSource
         if not os.path.exists(label_path):
@@ -143,7 +147,7 @@ class RasterVisionDataset(CustomDataset):
                 crs_transformer, # convert labels from geographic to pixel coordinates
                 vector_transformers=[
                     ClassInferenceTransformer(
-                        default_class_id=class_config.get_class_id('nothing') #use class config
+                        default_class_id=0
                     )
                 ]
             )
@@ -184,15 +188,27 @@ class RasterVisionDataset(CustomDataset):
             pixel_size = rasterio.warp.calculate_default_transform(src_crs=img_crs,dst_crs=target_crs,width=width,height=height,left=left,right=right,bottom=bottom,top=top)[0][0]
             return pixel_size
 
+    def approx_num_aoi_chips(self,aoi_box,chip_size:int) -> int:
+        height = aoi_box.ymax-aoi_box.ymin
+        width = aoi_box.xmax-aoi_box.xmin
+        approx_num_chips = int((height*width)/chip_size**2)
+        # print(f"AOI contains approximately {approx_num_chips} chips")
+        return approx_num_chips
 
-    def _create_OD_dataset(self,scene:Scene,dataset_type:str = "sliding_window",neg_ratio:float=10,max_windows:int=100,num_pixels:int=256,within_aoi:bool = True)-> CustomODRandomWindowGeoDataset|ObjectDetectionSlidingWindowGeoDataset:
+
+    def _create_OD_dataset(self,scene:Scene,neg_ratio:float=10,max_windows:int=100,num_pixels:int=256,within_aoi:bool = True)-> CustomODRandomWindowGeoDataset|ObjectDetectionSlidingWindowGeoDataset:
         pixel_size = self._find_patch_size(scene.raster_source.imagery_path)
         patch_ground_size = num_pixels*.3
         #Default patch size
         msize=round(patch_ground_size/pixel_size)
         mstride=msize
         
-        if dataset_type == "random_window":
+        aoi_box = scene.bbox
+        use_sliding_windows = self.data_type!="training"  or self.approx_num_aoi_chips(aoi_box, msize)<=max_windows 
+
+
+        if not use_sliding_windows:
+            # print("Finding Random Windows")
             try:
                 return self._random_window_dataset(scene=scene,neg_ratio=neg_ratio,within_aoi=True,num_pixels=num_pixels,max_windows=max_windows)
             except:
@@ -234,12 +250,14 @@ class RasterVisionDataset(CustomDataset):
     def load_annotations(self, ann_file):
         print('LOADING ANNOTATIONS')
         
-        if self.dataset_type=='random_window':
+        if self.data_type=="training":
             data_infos = []
-            for idx in range(len(self.rastervision_dataset)):
-                img_info = "nonsense"                
-                ann_info = "nonesense"
-                data_infos.append(dict(filename="fakename", width=224, height=224, ann=ann_info))
+            
+            for dataset in (self.rastervision_dataset.datasets):
+                for chip in range(len(dataset)):
+                    img_info = f"{dataset.scene.id}"
+                    ann_info = "nonesense"
+                    data_infos.append(dict(filename=img_info, width=224, height=224, ann=ann_info))
         else:
             data_infos = [self.extract_data_info(dataset,window) for dataset in self.rastervision_dataset.datasets for window in dataset.windows]
         return data_infos
