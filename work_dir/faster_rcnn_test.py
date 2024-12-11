@@ -1,20 +1,17 @@
 model = dict(
     type='FasterRCNN',
     backbone=dict(
-        type='ResNet',
-        depth=50,
-        num_stages=4,
-        out_indices=(0, 1, 2, 3),
-        frozen_stages=1,
-        norm_cfg=dict(type='BN', requires_grad=True),
-        norm_eval=True,
-        style='pytorch',
-        init_cfg=dict(type='Pretrained', checkpoint='torchvision://resnet50')),
+        type='CustomDinoViTV2',
+        pretrained_weight_path=
+        '/mnt/sarl_commons06/Wernke_projects/zimmejr1/geopacha/output/unsupervised/from_container/NEH_new/6gpus/eval/training_324999/teacher_checkpoint.pth',
+        freeze_backbone=True),
     neck=dict(
-        type='FPN',
-        in_channels=[256, 512, 1024, 2048],
+        type='SFP',
+        in_channels=[1024],
         out_channels=256,
-        num_outs=5),
+        num_outs=5,
+        use_p2=True,
+        use_act_checkpoint=False),
     rpn_head=dict(
         type='RPNHead',
         in_channels=256,
@@ -48,7 +45,8 @@ model = dict(
                 target_means=[0.0, 0.0, 0.0, 0.0],
                 target_stds=[0.1, 0.1, 0.2, 0.2]),
             reg_class_agnostic=False,
-            loss_cls=dict(type='FocalLoss', use_sigmoid=True, loss_weight=1.0),
+            loss_cls=dict(
+                type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
             loss_bbox=dict(type='CIoULoss', loss_weight=1.0))),
     train_cfg=dict(
         rpn=dict(
@@ -99,7 +97,7 @@ model = dict(
             score_thr=0.05,
             nms=dict(type='nms', iou_threshold=0.5),
             max_per_img=100)))
-checkpoint_config = dict(interval=4)
+checkpoint_config = dict(interval=5)
 log_config = dict(
     interval=50,
     hooks=[
@@ -121,12 +119,14 @@ opencv_num_threads = 0
 mp_start_method = 'fork'
 auto_scale_lr = dict(enable=False, base_batch_size=16)
 custom_imports = dict(
-    imports=['mmdet.datasets.rastervision_dataset'],
+    imports=[
+        'mmdet.datasets.rastervision_dataset', 'mmdet.models.backbones.dinov2'
+    ],
     allow_failed_imports=False)
 IMAGE_DIR = '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/Analysis_Images'
 VECTOR_DIR = '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/ObjectDetection/FinalData/Ignore_techo/'
 TRAIN_SCENE_PATH = '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/ObjectDetection/FinalData/Ignore_techo/ml_data_2024_12_09/scenes_train.csv'
-VAL_SCENE_PATH = '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/ObjectDetection/FinalData/Ignore_techo/ml_data_2024_12_09/scenes_validation_sample.csv'
+VAL_SCENE_PATH = '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/ObjectDetection/FinalData/Ignore_techo/ml_data_2024_12_09/scenes_validation.csv'
 train_pipeline = [
     dict(type='Resize', img_scale=(224, 224), keep_ratio=True),
     dict(type='RandomFlip', flip_ratio=0.5),
@@ -167,7 +167,7 @@ data = dict(
         data_type='training',
         neg_ratio=5,
         max_windows=100,
-        rgb=True),
+        rgb=False),
     val=dict(
         type='RasterVisionDataset',
         image_dir=
@@ -175,9 +175,9 @@ data = dict(
         vector_dir=
         '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/ObjectDetection/FinalData/Ignore_techo/',
         data_type='validation',
-        rgb=True,
+        rgb=False,
         scene_csv_path=
-        '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/ObjectDetection/FinalData/Ignore_techo/ml_data_2024_12_09/scenes_validation_sample.csv',
+        '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/ObjectDetection/FinalData/Ignore_techo/ml_data_2024_12_09/scenes_validation.csv',
         pipeline=[
             dict(
                 type='MultiScaleFlipAug',
@@ -198,9 +198,9 @@ data = dict(
         vector_dir=
         '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/ObjectDetection/FinalData/Ignore_techo/',
         data_type='testing',
-        rgb=True,
+        rgb=False,
         scene_csv_path=
-        '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/ObjectDetection/FinalData/Ignore_techo/ml_data_2024_12_09/scenes_validation_sample.csv',
+        '/mnt/sarl_commons06/Wernke_projects/GeoPACHA/Imagery_Machine_Learning/ObjectDetection/FinalData/Ignore_techo/ml_data_2024_12_09/scenes_validation.csv',
         pipeline=[
             dict(
                 type='MultiScaleFlipAug',
@@ -221,9 +221,10 @@ lr_config = dict(
     warmup_iters=500,
     warmup_ratio=0.001,
     step=[8, 11])
-runner = dict(type='EpochBasedRunner', max_epochs=12)
-optimizer = dict(type='SGD', lr=0.02, momentum=0.9, weight_decay=0.0001)
-optimizer_config = dict(grad_clip=None)
+runner = dict(type='EpochBasedRunner', max_epochs=50)
+optimizer = dict(
+    type='AdamW', lr=0.0001, weight_decay=0.05, eps=1e-08, betas=(0.9, 0.999))
+optimizer_config = dict(grad_clip=dict(max_norm=0.01, norm_type=2))
 work_dir = 'work_dir'
 auto_resume = False
 gpu_ids = range(0, 2)
