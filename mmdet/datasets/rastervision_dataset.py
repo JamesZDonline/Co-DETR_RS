@@ -122,7 +122,12 @@ class RasterVisionDataset(CustomDataset):
         )
     
         # Extract AOI extent
-        myextent=aoiSource.extent
+        # print(aoi_path)
+        try:
+            myextent=aoiSource.extent
+        except:
+            raise Exception(f"Problem with {aoi_path}") 
+
         use_sliding_windows = self.data_type!="training"  or self.approx_num_aoi_chips(myextent, msize)<=self.max_windows 
         if use_sliding_windows:
             rasterSource = RasterioSource(
@@ -300,8 +305,8 @@ class RasterVisionDataset(CustomDataset):
         gt_bboxes=target.boxes.numpy()
         gt_labels = target.get_field('class_ids')
         results = {'img' : img,
-                   'filename':'transformed_'+self.data_infos[0]['filename'],
-                   'ori_filename':self.data_infos[0]['filename'],
+                   'filename':'transformed_'+self.data_infos[idx]['filename'],
+                   'ori_filename':self.data_infos[idx]['filename'],
                    'ori_shape' : img.shape,
             "img_shape":img.shape,
             'gt_bboxes' : gt_bboxes,
