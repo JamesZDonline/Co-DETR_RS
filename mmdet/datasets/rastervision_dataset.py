@@ -30,8 +30,10 @@ from .custom_od_random_window_geodataset import CustomODRandomWindowGeoDataset
 
 @DATASETS.register_module()
 class RasterVisionDataset(CustomDataset):
-    CLASSES = ['Arch. Corral', 'Arch Estructura','Arch Patio','Mod. Corral','Mod. Estructura','Mod Patio']
-    COLORS = ['lightblue','green','purple','darkblue','darkgreen','orange']
+    # CLASSES = ['Arch. Corral', 'Arch Estructura','Arch Patio','Mod. Corral','Mod. Estructura','Mod Patio']
+    # COLORS = ['lightblue','green','purple','darkblue','darkgreen','orange']
+    CLASSES = ['Arch. Corral', 'Arch Estructura','Mod. Corral','Mod. Estructura']
+    COLORS = ['lightblue','green','darkblue','darkgreen']
 
     def __init__(
             self,
@@ -161,6 +163,7 @@ class RasterVisionDataset(CustomDataset):
             try:
                 labelSource=ObjectDetectionLabelSource(vector_source=labelVectorSource, #use the above label vectors
                     bbox=rasterSource.bbox, #clip to aoi extent
+                    ioa_thresh=0.5
                     )
             except ValueError as e:
                 pass
@@ -234,7 +237,7 @@ class RasterVisionDataset(CustomDataset):
     
     def extract_data_info(self,dataset, window):
         #Pull the labels for a given window
-        labels = dataset.scene.label_source.get_labels(window)
+        labels = dataset.scene.label_source.get_labels(window,ioa_thresh=dataset.scene.label_source.ioa_thresh)
         # Find the dimensions of an image chip from the given dataset (note: this is different depending on the spatial resolution of the image)
         width,height = dataset.size
         # Calculate a resize ratio. This will be used to transform the bbox in the same way the resize will to the image
@@ -331,7 +334,7 @@ class RasterVisionDataset(CustomDataset):
                    'ori_shape' : img.shape,
             "img_shape":img.shape,
             'bbox_fields' : [],
-            'img_norm_cfg':dict(mean=[.5,.5,.5], std=[.5,.5,.5], to_rgb=True)
+            # 'img_norm_cfg':dict(mean=[.5,.5,.5], std=[.5,.5,.5], to_rgb=True)
         }
         self.pre_pipeline(results)
         return self.pipeline(results)
