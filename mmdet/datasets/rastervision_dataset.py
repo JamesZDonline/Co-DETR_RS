@@ -214,8 +214,11 @@ class RasterVisionDataset(CustomDataset):
         aoi_box = scene.bbox
         use_sliding_windows = self.data_type!="training"  or self.approx_num_aoi_chips(aoi_box, msize)<=max_windows 
 
-
+        
         if not use_sliding_windows:
+            labels = scene.label_source.get_labels()
+            filtered_labels = labels.filter_by_aoi(scene.aoi_polygons)
+            max_windows = int(min(max_windows,len(filtered_labels)*(neg_ratio+1)))
             # print("Finding Random Windows")
             try:
                 return self._random_window_dataset(scene=scene,neg_ratio=neg_ratio,within_aoi=True,num_pixels=num_pixels,max_windows=max_windows)
